@@ -1,0 +1,116 @@
+services:
+  kafka:
+    image: kafka-local:7.5.0
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+      - "29093:29093"
+    environment:
+      # KRaft Mode Configuration
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Listeners
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093   
+
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server localhost:9092
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - kafka-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - kafka-network
+
+  flink-jobmanager:
+    image: flink-jobmanager:1.18.1
+    command: jobmanager
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "6123:6123"
+      - "8081:8081"
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      JOB_MANAGER_RPC_PORT: 6123
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        rest.bind-address: 0.0.0.0
+        taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - flink-jobmanager:/tmp/flink-dist
+    healthcheck:
+      test: curl -f http://localhost:8081/v1/overview || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - kafka-network
+
+  flink-taskmanager:
+    image: flink-taskmanager:1.18.1
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      JOB_MANAGER_RPC_PORT: 6123
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        rest.bind-address: 0.0.0.0
+        taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - flink-taskmanager:/tmp/flink-dist
+    networks:
+      - kafka-network
+
+  flink-sql-job:
+    image: flink-sql-job:1.18.1
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: flink-jobmanager
+        rest.port: 8081
+        execution.target: remote
+    networks:
+      - kafka-network
+
+volumes:
+  flink-jobmanager:
+  flink-taskmanager:
+
+networks:
+  kafka-network:
+    driver: bridge
