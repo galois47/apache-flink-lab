@@ -91,12 +91,34 @@ services:
     networks:
       - kafka-network
 
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: flinklab
+      MYSQL_USER: flinkuser
+      MYSQL_PASSWORD: flinkpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: mysqladmin ping -h localhost -u root -prootpass
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - kafka-network
+
   flink-sql-job:
     image: flink-sql-job:1.18.1
     depends_on:
       flink-jobmanager:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      mysql:
         condition: service_healthy
     environment:
       FLINK_PROPERTIES: |

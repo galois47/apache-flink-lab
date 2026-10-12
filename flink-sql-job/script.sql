@@ -1,17 +1,35 @@
 CREATE TABLE input_table (
-    `value` STRING
+    `id` INT,
+    `value` STRING,
+    proc_time AS PROCTIME()
 ) WITH (
     'connector' = 'kafka',
     'topic' = 'input-topic',
     'properties.bootstrap.servers' = 'kafka:29092',
-    'properties.group.id' = 'flink-sql-uppercase-job',
+    'properties.group.id' = 'flink-sql-enrichment-job',
     'format' = 'json',
     'json.ignore-parse-errors' = 'true',
     'scan.startup.mode' = 'earliest-offset'
 );
 
+CREATE TABLE mysql_table (
+    `id` INT,
+    `tier` STRING
+) WITH (
+    'connector' = 'jdbc',
+    'url' = 'jdbc:mysql://mysql:3306/flinklab',
+    'table-name' = 'membership_tiers',
+    'username' = 'flinkuser',
+    'password' = 'flinkpass',
+    'lookup.cache' = 'PARTIAL',
+    'lookup.partial-cache.max-rows' = '1000',
+    'lookup.partial-cache.expire-after-write' = '10s',
+    'lookup.max-retries' = '3'
+);
+
 CREATE TABLE output_table (
-    `value` STRING
+    `value` STRING,
+    `tier` STRING
 ) WITH (
     'connector' = 'kafka',
     'topic' = 'output-topic',
@@ -19,5 +37,14 @@ CREATE TABLE output_table (
     'format' = 'json'
 );
 
+-- Enrichment lookup join: every Kafka message is looked up against the MySQL
+-- membership_tiers table by id, as of the message's processing time. LEFT JOIN
+-- guarantees every Kafka message produces exactly one output row, with
+-- tier = NULL when the id doesn't match any row in MySQL. Unlike the previous
+-- UNION ALL design, MySQL is never read once at startup -- each distinct id
+-- triggers a fresh (or cached, see lookup.partial-cache.* above) JDBC query.
 INSERT INTO output_table
-SELECT UPPER(`value`) FROM input_table;
+SELECT UPPER(i.`value`) AS `value`, m.`tier` AS `tier`
+FROM input_table AS i
+LEFT JOIN mysql_table FOR SYSTEM_TIME AS OF i.proc_time AS m
+ON i.`id` = m.`id`;
