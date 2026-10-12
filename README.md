@@ -133,6 +133,18 @@ in MySQL — see "How the Job Works" below.
   | `{"id":2,"value":"flink is running"}`     | `{"value":"FLINK IS RUNNING","tier":"SILVER"}` |
   | `{"id":999,"value":"mystery"}`            | `{"value":"MYSTERY","tier":null}`           |
 
+### 2b. Watch Results Live from Flink (Print Sink)
+
+The job also writes every enriched row to a `print` sink, which prints to the
+TaskManager's stdout. Follow it with:
+
+```bash
+docker compose logs -f flink-taskmanager
+```
+
+Each row shows up as `enriched:<subtask>> +I[HELLO WORLD, GOLD]`. If nothing
+appears there, check the dashboard: **Task Managers → (your TM) → Stdout**.
+
 ### 3. Verify the Lookup Join
 
 Check the seeded lookup table directly:
