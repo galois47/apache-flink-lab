@@ -1,0 +1,201 @@
+# Flink + Kafka + MySQL lab. Run with `docker compose up -d` / `docker compose down [-v]`.
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    networks: [kafka-network]
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+      - "29093:29093"
+    environment:
+      # Required by the Confluent image in KRaft mode; any fixed base64 UUID works
+      # for a single-node lab.
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+    # Ephemeral data dir: topics and messages are dropped whenever the container
+    # is recreated. Replace with a named volume to keep them.
+    tmpfs:
+      - /var/lib/kafka/data:uid=1000,gid=1000
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # One-shot: creates every topic in TOPICS (space separated) if missing.
+  # Add or remove topic names here, then run `docker compose run --rm kafka-init`.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    networks: [kafka-network]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      TOPICS: input-topic output-topic middle-topic
+      TOPIC_PARTITIONS: 1
+      TOPIC_REPLICATION_FACTOR: 1
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -e
+        for topic in $$TOPICS; do
+          echo "Ensuring topic $$topic..."
+          kafka-topics --bootstrap-server kafka:29092 \
+            --create --if-not-exists --topic "$$topic" \
+            --partitions "$$TOPIC_PARTITIONS" --replication-factor "$$TOPIC_REPLICATION_FACTOR"
+        done
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    networks: [kafka-network]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  flink-jobmanager:
+    build: ./flink-connectors
+    image: flink-connectors:1.18.1
+    networks: [kafka-network]
+    container_name: flink-jobmanager
+    command: jobmanager
+    ports:
+      - "6123:6123"
+      - "8081:8081"
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      JOB_MANAGER_RPC_PORT: 6123
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        rest.bind-address: 0.0.0.0
+        taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - flink-jobmanager:/tmp/flink-dist
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/v1/overview || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  flink-taskmanager:
+    build: ./flink-connectors
+    image: flink-connectors:1.18.1
+    networks: [kafka-network]
+    container_name: flink-taskmanager
+    command: taskmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      JOB_MANAGER_RPC_PORT: 6123
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        rest.bind-address: 0.0.0.0
+        taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - flink-taskmanager:/tmp/flink-dist
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+
+  # MySQL naming convention for suffix <x>: container mock-database-<x>;
+  # database, user and password mock_database_<x>.
+  mock-database-a:
+    image: mysql:8.0
+    networks: [kafka-network]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -prootpass"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    container_name: mock-database-a
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: mock_database_a
+      MYSQL_USER: mock_database_a
+      MYSQL_PASSWORD: mock_database_a
+    volumes:
+      - ./mock-database-a:/docker-entrypoint-initdb.d:ro
+
+  mock-database-b:
+    image: mysql:8.0
+    networks: [kafka-network]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -prootpass"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    container_name: mock-database-b
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: mock_database_b
+      MYSQL_USER: mock_database_b
+      MYSQL_PASSWORD: mock_database_b
+    volumes:
+      - ./mock-database-b:/docker-entrypoint-initdb.d:ro
+
+  # One-shot submitter: exits 0 after submitting the job.
+  flink-sql-job:
+    build: ./flink-connectors
+    image: flink-connectors:1.18.1
+    networks: [kafka-network]
+    container_name: flink-sql-job
+    restart: "no"
+    working_dir: /opt/flink
+    command: ["bash", "-c", "sleep 20 && /opt/flink/bin/sql-client.sh -f script.sql"]
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: flink-jobmanager
+        rest.port: 8081
+        execution.target: remote
+    volumes:
+      - ./flink-sql-job/script.sql:/opt/flink/script.sql:ro
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+      mock-database-a:
+        condition: service_healthy
+      mock-database-b:
+        condition: service_healthy
+
+networks:
+  kafka-network:
+    name: kafka-network
+
+volumes:
+  flink-jobmanager:
+  flink-taskmanager:
